@@ -424,15 +424,21 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
 
         @Override
         public void run() {
+            // 艾斯：step1 如果消息处理队列为丢弃，则停止本次消费任务
             if (this.processQueue.isDropped()) {
                 log.warn("run, the message queue not be able to consume, because it's dropped. {}", this.messageQueue);
                 return;
             }
 
+            // 艾斯：step2 根据消息队列获取一个对象。然后消息消费时先申请独占objLock。
+            // 顺序消息消费的并发度为消息队列，也就是一个消息消费队列同一时刻只会被一个消费者线程中的一个线程消费
             final Object objLock = messageQueueLock.fetchLockObject(this.messageQueue);
             synchronized (objLock) {
+                // 艾斯：step3 如果是广播模式，直接进入消费，无需锁定处理队列，因为相互直接无竞争；
+                // 如果是集群模式，消息消费前提是processQueue被锁定且锁没超时
                 if (MessageModel.BROADCASTING.equals(ConsumeMessageOrderlyService.this.defaultMQPushConsumerImpl.messageModel())
                     || (this.processQueue.isLocked() && !this.processQueue.isLockExpired())) {
+                    // 艾斯：step4 顺序消息消费处理逻辑，
                     final long beginTime = System.currentTimeMillis();
                     for (boolean continueConsume = true; continueConsume; ) {
                         if (this.processQueue.isDropped()) {
@@ -454,12 +460,16 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
                             break;
                         }
 
+                        // 艾斯：step4 顺序消息消费处理逻辑，每一个ConsumeRequest消费任务不是以消费者条数来计算的，
+                        // 而是根据消费时间，默认当消费市场大于60s后，本次消费任务结束，由组内其他线程继续消费
                         long interval = System.currentTimeMillis() - beginTime;
                         if (interval > MAX_TIME_CONSUME_CONTINUOUSLY) {
                             ConsumeMessageOrderlyService.this.submitConsumeRequestLater(processQueue, messageQueue, 10);
                             break;
                         }
 
+                        // 艾斯：step5 每次从处理队列中按顺序去处consumeBatchSize消息，如果未取到消息，则设置continueConsume为false，本次消费结束。
+                        // 顺序消息消费时，从ProcessQueue中取出的消息，会临时存储到processQueue的consumingMsgOrderlyTreeMap中
                         final int consumeBatchSize =
                             ConsumeMessageOrderlyService.this.defaultMQPushConsumer.getConsumeMessageBatchMaxSize();
 
@@ -471,6 +481,7 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
                             ConsumeOrderlyStatus status = null;
 
                             ConsumeMessageContext consumeMessageContext = null;
+                            // 艾斯：step6 执行消息消费钩子（消息消费之前的before方法），通过DefaultMQPushConsumerImpl的registerConsumeMessageHook方法注册钩子
                             if (ConsumeMessageOrderlyService.this.defaultMQPushConsumerImpl.hasHook()) {
                                 consumeMessageContext = new ConsumeMessageContext();
                                 consumeMessageContext
@@ -484,6 +495,8 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
                                 ConsumeMessageOrderlyService.this.defaultMQPushConsumerImpl.executeHookBefore(consumeMessageContext);
                             }
 
+                            // 艾斯：step7 申请消息消费锁，如果消息队列被丢弃，则放弃该消息消费队列的消费，
+                            // 然后执行消息消费监听器，调用业务放具体消息监听器执行真正的消息消费处理逻辑，并通知RocketMQ消息消费结果
                             long beginTimestamp = System.currentTimeMillis();
                             ConsumeReturnType returnType = ConsumeReturnType.SUCCESS;
                             boolean hasException = false;
@@ -531,6 +544,7 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
                                 returnType = ConsumeReturnType.SUCCESS;
                             }
 
+                            // 艾斯：step8 执行消息消费钩子函数，计算消息消费过程中应用程序抛出异常，钩子函数的后处理逻辑也会被调用
                             if (ConsumeMessageOrderlyService.this.defaultMQPushConsumerImpl.hasHook()) {
                                 consumeMessageContext.getProps().put(MixAll.CONSUME_CONTEXT_TYPE, returnType.name());
                             }

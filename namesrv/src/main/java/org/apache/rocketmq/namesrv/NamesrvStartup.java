@@ -79,8 +79,10 @@ public class NamesrvStartup {
             return null;
         }
 
+        // 艾斯：[NameServer启动流程] step1 解析配置文件，填充NameServerConfig和 NettyServerConfig
         final NamesrvConfig namesrvConfig = new NamesrvConfig();
         final NettyServerConfig nettyServerConfig = new NettyServerConfig();
+        // 艾斯：[NameServer启动流程] 设置监听端口为9876
         nettyServerConfig.setListenPort(9876);
         if (commandLine.hasOption('c')) {
             String file = commandLine.getOptionValue('c');
@@ -123,6 +125,7 @@ public class NamesrvStartup {
         MixAll.printObjectProperties(log, namesrvConfig);
         MixAll.printObjectProperties(log, nettyServerConfig);
 
+        // 艾斯：[NameServer启动流程] step2 根据启动属性创建NamesrvController实例，并初始化该实例，NamesrvController实例为NameServer核心控制器
         final NamesrvController controller = new NamesrvController(namesrvConfig, nettyServerConfig);
 
         // remember all configs to prevent discard
@@ -142,7 +145,7 @@ public class NamesrvStartup {
             controller.shutdown();
             System.exit(-3);
         }
-
+        // 艾斯：[NameServer启动流程] step3 注册JVM的钩子函数并启动服务器，以便监听Broker、消息生产者的网络请求
         Runtime.getRuntime().addShutdownHook(new ShutdownHookThread(log, (Callable<Void>) () -> {
             controller.shutdown();
             return null;

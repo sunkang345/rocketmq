@@ -177,7 +177,7 @@ public class BrokerConfig {
      * Transaction message check interval.
      */
     @ImportantField
-    private long transactionCheckInterval = 60 * 1000;
+    private long transactionCheckInterval = 60 * 250;
 
     /**
      * Acl feature switch

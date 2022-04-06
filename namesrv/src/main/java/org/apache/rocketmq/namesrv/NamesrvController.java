@@ -75,6 +75,7 @@ public class NamesrvController {
 
     public boolean initialize() {
 
+        // 艾斯：[NameServer启动流程：namesrvController初始化] 加载kv配置
         this.kvConfigManager.load();
 
         this.remotingServer = new NettyRemotingServer(this.nettyServerConfig, this.brokerHousekeepingService);
@@ -84,8 +85,9 @@ public class NamesrvController {
 
         this.registerProcessor();
 
+        // 艾斯：[NameServer启动流程：namesrvController初始化] 开启定时任务，每隔10s中扫描一次Broker，移除处于不激活状态的Broker.
         this.scheduledExecutorService.scheduleAtFixedRate(NamesrvController.this.routeInfoManager::scanNotActiveBroker, 5, 10, TimeUnit.SECONDS);
-
+        // 艾斯：[NameServer启动流程：namesrvController初始化] 开启定时任务,每隔10分钟打印一次KV配置
         this.scheduledExecutorService.scheduleAtFixedRate(NamesrvController.this.kvConfigManager::printAllPeriodically, 1, 10, TimeUnit.MINUTES);
 
         if (TlsSystemConfig.tlsMode != TlsMode.DISABLED) {
