@@ -908,6 +908,7 @@ public class BrokerController {
             this.registerBrokerAll(true, false, true);
         }
 
+        // 艾斯：[路由注册] step1 Broker发送心跳包
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override

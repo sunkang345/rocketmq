@@ -110,6 +110,7 @@ public class BrokerOuterAPI {
         this.remotingClient.updateNameServerAddressList(lst);
     }
 
+    // 艾斯：[路由注册] 遍历NameServer列表，Broker消息服务器依次向NameServer发送心跳包
     public List<RegisterBrokerResult> registerBrokerAll(
         final String clusterName,
         final String brokerAddr,

@@ -346,6 +346,7 @@ public class DefaultRequestProcessor extends AsyncNettyRequestProcessor implemen
         return response;
     }
 
+    // 艾斯：[路由发现] 路由发现不是实时的，当topic路由出现变化后，nameServer不主动推送给客户端，而是游客户端定时拉取主题的最新路由。
     public RemotingCommand getRouteInfoByTopic(ChannelHandlerContext ctx,
         RemotingCommand request) throws RemotingCommandException {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
