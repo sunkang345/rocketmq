@@ -81,27 +81,31 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      * important when transactional messages are involved. </p>
      *
      * For non-transactional messages, it does not matter as long as it's unique per process. </p>
-     *
+     * 生产者所属组，消息服务器在回查事务状态时会随机选择改组中任何一个生产者发起事务会查请求
      * See {@linktourl http://rocketmq.apache.org/docs/core-concept/} for more discussion.
      */
     private String producerGroup;
 
     /**
      * Just for testing or demo program
+     * 默认topicKey
      */
     private String createTopicKey = TopicValidator.AUTO_CREATE_TOPIC_KEY_TOPIC;
 
     /**
+     * 默认主题在每一个Broker队列数量
      * Number of queues to create per default topic.
      */
     private volatile int defaultTopicQueueNums = 4;
 
     /**
+     * 消息发送超时时间
      * Timeout for sending messages.
      */
     private int sendMsgTimeout = 3000;
 
     /**
+     * 消息体超过该值，则启动压缩
      * Compress message body threshold, namely, message body larger than 4k will be compressed on default.
      */
     private int compressMsgBodyOverHowmuch = 1024 * 4;
@@ -110,6 +114,7 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      * Maximum number of retry to perform internally before claiming sending failure in synchronous mode. </p>
      *
      * This may potentially cause message duplication which is up to application developers to resolve.
+     * 同步发送消息失败时的重试次数，总共会执行三次，可能会造成消息重复消费，需要消息接收方做好幂等
      */
     private int retryTimesWhenSendFailed = 2;
 
@@ -117,15 +122,18 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      * Maximum number of retry to perform internally before claiming sending failure in asynchronous mode. </p>
      *
      * This may potentially cause message duplication which is up to application developers to resolve.
+     * 异步发送消息失败时的重试此时 ，默认为2
      */
     private int retryTimesWhenSendAsyncFailed = 2;
 
     /**
      * Indicate whether to retry another broker on sending failure internally.
+     * 消息重试时选择另外一个Broker是，是否不等待存储结果就返回，默认为false
      */
     private boolean retryAnotherBrokerWhenNotStoreOK = false;
 
     /**
+     * 允许发送的最大消息长度
      * Maximum allowed message size in bytes.
      */
     private int maxMessageSize = 1024 * 1024 * 4; // 4M

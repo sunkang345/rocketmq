@@ -24,9 +24,22 @@ import org.apache.rocketmq.common.protocol.route.QueueData;
 import org.apache.rocketmq.common.protocol.route.TopicRouteData;
 
 public class TopicPublishInfo {
+    /**
+     * 是否是顺序消费
+     */
     private boolean orderTopic = false;
+    /**
+     * 是否有队列路由的信息
+     */
     private boolean haveTopicRouterInfo = false;
+    /**
+     * 该主题下的消息队列
+     */
     private List<MessageQueue> messageQueueList = new ArrayList<MessageQueue>();
+
+    /**
+     * 每选择一次消息队列，该值自增1，如果Integer.MAX_VALUE，则重置为0，用于选择消息队列
+     */
     private volatile ThreadLocalIndex sendWhichQueue = new ThreadLocalIndex();
     private TopicRouteData topicRouteData;
 
@@ -66,7 +79,19 @@ public class TopicPublishInfo {
         this.haveTopicRouterInfo = haveTopicRouterInfo;
     }
 
+    /**
+     * 默认的 不启用Broker故障延迟机制
+     * 该算法在一次消息发送过程中能成功规避故障的Broker，但是如果Broker宕机，由于路由算法中的消息队列是按照Broker排序的，
+     * 如果上一次根据由算法选择的是宕机的Broker的第一个队列，那么随后的下次选择的是宕机Broker的第二个队列，消息发送很可能再次失败，再次引发重试，带来不必要的性能损耗
+     * 那么有什么方法在一次消息发送失败后，暂时将该broker排除在消息队列选择范围外呢？出现这个问题是因为NameServer检查Broker是否可用是有延迟的，最短的一次心跳间隔时间是10s；
+     * 其次，NameServer不会监测到Broker宕机后马上推送消息给消息生产者，而是消息生产者每隔30s更新一次路由信息，所以消息生产者最快感知Broker的最新路由信息也需要30s。
+     * 如果能引入一种机制，在Broker宕机期间，如果一次消息发送失败后，可以将改Broker暂时排除在消息队列的选择范围中即可。
+     * @param lastBrokerName
+     * @return
+     */
     public MessageQueue selectOneMessageQueue(final String lastBrokerName) {
+        // 艾斯：[消息发送] 选择消息队列：如果上一次选择队列时，发送失败，那么下次选择broker时，将上次失败的broker排除在外；
+        // 如果 lastBrokerName 为null，则用sendWhichQueue自增再获取值，余当前路由表中消息队列个数取模，返回该位置的MessageQueue
         if (lastBrokerName == null) {
             return selectOneMessageQueue();
         } else {

@@ -31,6 +31,7 @@ public class LatencyFaultToleranceImpl implements LatencyFaultTolerance<String> 
 
     @Override
     public void updateFaultItem(final String name, final long currentLatency, final long notAvailableDuration) {
+        // 艾斯：[消息发送] broker故障清除策略 根据broker名称从缓存表中获取FaultItem，如果找到则更新FaultItem；否则创建FaultItem。
         FaultItem old = this.faultItemTable.get(name);
         if (null == old) {
             final FaultItem faultItem = new FaultItem(name);
@@ -91,9 +92,21 @@ public class LatencyFaultToleranceImpl implements LatencyFaultTolerance<String> 
             '}';
     }
 
+    /**
+     * 失败条目（规避规则条目）
+     */
     class FaultItem implements Comparable<FaultItem> {
+        /**
+         * 条目唯一键，这里为brokerName
+         */
         private final String name;
+        /**
+         * 本次消息发送延迟
+         */
         private volatile long currentLatency;
+        /**
+         * 规避故障开始时间
+         */
         private volatile long startTimestamp;
 
         public FaultItem(final String name) {

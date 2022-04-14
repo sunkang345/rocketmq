@@ -17,6 +17,9 @@
 package org.apache.rocketmq.common.sysflag;
 
 public class MessageSysFlag {
+    /**
+     * 16进制的1，
+     */
     public final static int COMPRESSED_FLAG = 0x1;
     public final static int MULTI_TAGS_FLAG = 0x1 << 1;
     public final static int TRANSACTION_NOT_TYPE = 0;

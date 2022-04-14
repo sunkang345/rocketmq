@@ -129,6 +129,10 @@ public class Message implements Serializable {
         return this.getProperty(MessageConst.PROPERTY_TAGS);
     }
 
+    /**
+     * 消息TAG，用于消息过滤
+     * @param tags
+     */
     public void setTags(String tags) {
         this.putProperty(MessageConst.PROPERTY_TAGS, tags);
     }
@@ -137,6 +141,10 @@ public class Message implements Serializable {
         return this.getProperty(MessageConst.PROPERTY_KEYS);
     }
 
+    /**
+     * 消息索引建，多个用空格分开，rocketMq可以根据这些key快速检索到消息
+     * @param keys
+     */
     public void setKeys(Collection<String> keys) {
         StringBuilder sb = new StringBuilder();
         for (String k : keys) {
@@ -169,6 +177,10 @@ public class Message implements Serializable {
         return Boolean.parseBoolean(result);
     }
 
+    /**
+     * 设置消息发送时是否等消息存储完成后再返回
+     * @param waitStoreMsgOK
+     */
     public void setWaitStoreMsgOK(boolean waitStoreMsgOK) {
         this.putProperty(MessageConst.PROPERTY_WAIT_STORE_MSG_OK, Boolean.toString(waitStoreMsgOK));
     }
