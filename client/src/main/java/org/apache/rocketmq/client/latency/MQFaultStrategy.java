@@ -109,7 +109,7 @@ public class MQFaultStrategy {
         // 艾斯：[消息发送] broker故障清除策略：如果isolation为true，则使用默认的30s作为computeNotAvailableDuration方法的参数；如果为false，则使用本次消息
         // 发送延时作为作为computeNotAvailableDuration方法的参数,那
         // computeNotAvailableDuration的作用是计算因本次消息发送故障需要将Broker规避的时长，也就是接下来多久的时间呗Broker将不参与消息发送队列负载。
-        // 具体算法：从latencyMax尾部开始寻找，找到第一个比latencyMax小的下表，然后从notAvailableDuration数组中获取需要规避的时长
+        // 具体算法：从latencyMax尾部开始寻找，找到第一个比latencyMax小的下标，然后从notAvailableDuration数组中获取需要规避的时长
         if (this.sendLatencyFaultEnable) {
             long duration = computeNotAvailableDuration(isolation ? 30000 : currentLatency);
             this.latencyFaultTolerance.updateFaultItem(brokerName, currentLatency, duration);

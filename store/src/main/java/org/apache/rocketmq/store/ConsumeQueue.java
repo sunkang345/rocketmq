@@ -156,9 +156,17 @@ public class ConsumeQueue {
         }
     }
 
+    /**
+     * 根据消息时间戳查询消息的物理偏移量
+     * @param timestamp
+     * @return
+     */
     public long getOffsetInQueueByTime(final long timestamp) {
+        // 艾斯：[根据消息时间戳查找消息偏移量] step1 首先根据时间戳定位到物理文件，原理是从第一个文件开始找到第一个文件更新时间大于改时间戳的文件
         MappedFile mappedFile = this.mappedFileQueue.getMappedFileByTime(timestamp);
         if (mappedFile != null) {
+            // 艾斯：[根据消息时间戳查找消息偏移量] step2 采用二分查找来加速检索。首先计算最低查找偏移量，取消息队列最小偏移量与该文件最小偏移量而这种的最小偏移量为low。
+            // 获取当前存储文件中有效的最小消息物理偏移量minPhysicOffset，如果查找到消息偏移量小于该物理偏移量，则结束该查找过程。
             long offset = 0;
             int low = minLogicOffset > mappedFile.getFileFromOffset() ? (int) (minLogicOffset - mappedFile.getFileFromOffset()) : 0;
             int high = 0;
@@ -541,6 +549,13 @@ public class ConsumeQueue {
         }
     }
 
+    /**
+     * 根据startIndex获取消息消费队列条目
+     * 首先startIndex * CQ_STORE_UNIT_SIZE获取到在consumequeue中的物理偏移量，如果offset小于getMinLogicOffset说明消息已被删除；
+     * 如果大于getMinLogicOffset，则根据偏移量定位到具体的物理文件，然后通过offset与物理文件大小取模获取在该文件的偏移量，从偏移量开始连续读取20个字节即可。
+     * @param startIndex
+     * @return
+     */
     public SelectMappedBufferResult getIndexBuffer(final long startIndex) {
         int mappedFileSize = this.mappedFileSize;
         long offset = startIndex * CQ_STORE_UNIT_SIZE;

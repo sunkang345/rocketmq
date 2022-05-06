@@ -43,28 +43,88 @@ import org.apache.rocketmq.store.config.MessageStoreConfig;
 import org.apache.rocketmq.store.util.LibC;
 import sun.nio.ch.DirectBuffer;
 
+/**
+ * RocketMQ内存映射文件的具体实现
+ */
 public class MappedFile extends ReferenceResource {
+    /**
+     * 操作系统每页大小默认4K
+     */
     public static final int OS_PAGE_SIZE = 1024 * 4;
     protected static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
+    /**
+     * 当前JVM实例中MappedFile虚拟内存。
+     */
     private static final AtomicLong TOTAL_MAPPED_VIRTUAL_MEMORY = new AtomicLong(0);
 
+    /**
+     * 当前JVM实例中MappedFile对象个数
+     */
     private static final AtomicInteger TOTAL_MAPPED_FILES = new AtomicInteger(0);
+    /**
+     * 当前MappedFile的写指针，从0开始（内存映射文件中的写指针）
+     */
     protected final AtomicInteger wrotePosition = new AtomicInteger(0);
+
+    /**
+     * 当前文件的提交指针，如果开启transientStorePoolEnable，则数据会存储在TransientStorePool中，然后提交到内存映射ByteBuffer中，在刷新到磁盘
+     */
     protected final AtomicInteger committedPosition = new AtomicInteger(0);
+
+    /**
+     * 刷写到磁盘的指针，该指针之前的数据持久化到磁盘中
+     */
     private final AtomicInteger flushedPosition = new AtomicInteger(0);
+
+    /**
+     * 文件大小
+     */
     protected int fileSize;
+
+    /**
+     * 文件通道
+     */
     protected FileChannel fileChannel;
     /**
      * Message will put to here first, and then reput to FileChannel if writeBuffer is not null.
+     * 堆内存ByteBuffer，如果不为空，数据首先将存储在该Buffer中，然后提交到MappedFile对应的内存映射文件Buffer。transientStorePoolEnable为true时不为空
      */
     protected ByteBuffer writeBuffer = null;
+
+    /**
+     * 堆内存池，transientStorePoolEnable为true时启用
+     */
     protected TransientStorePool transientStorePool = null;
+
+    /**
+     * 文件名称
+     */
     private String fileName;
+
+    /**
+     * 文件的起始偏移量
+     */
     private long fileFromOffset;
+
+    /**
+     * 物理文件
+     */
     private File file;
+
+    /**
+     * 物理文件对应的内存映射Buffer
+     */
     private MappedByteBuffer mappedByteBuffer;
+
+    /**
+     * 文件最后一次写入时间
+     */
     private volatile long storeTimestamp = 0;
+
+    /**
+     * 是否是MappedFileQueue队列中的第一个文件
+     */
     private boolean firstCreateInQueue = false;
 
     public MappedFile() {
@@ -154,6 +214,13 @@ public class MappedFile extends ReferenceResource {
         return TOTAL_MAPPED_VIRTUAL_MEMORY.get();
     }
 
+    /**
+     * 如果 transientStorePool为true，则初始化MappedFile的writeBuffer
+     * @param fileName
+     * @param fileSize
+     * @param transientStorePool
+     * @throws IOException
+     */
     public void init(final String fileName, final int fileSize,
         final TransientStorePool transientStorePool) throws IOException {
         init(fileName, fileSize);
@@ -161,10 +228,18 @@ public class MappedFile extends ReferenceResource {
         this.transientStorePool = transientStorePool;
     }
 
+    /**
+     * MappedFile文件初始化
+     * 根据transientStorePoolEnable为true时表示内容先存储在对外内存，然后通过Commit线程将数据提交到内存映射Buffer中，再通过Flush线程将内存映射Buffer中的数据持久化到磁盘。
+     * @param fileName
+     * @param fileSize
+     * @throws IOException
+     */
     private void init(final String fileName, final int fileSize) throws IOException {
         this.fileName = fileName;
         this.fileSize = fileSize;
         this.file = new File(fileName);
+        // 艾斯：[MappedFile文件初始化] ：MappedFile文件初始偏移量为文件名，通过RandomAccessFile创建读写文件通道，并将文件内容使用NIO的内存映射Buffer将文件映射到内存中
         this.fileFromOffset = Long.parseLong(this.file.getName());
         boolean ok = false;
 
@@ -211,6 +286,8 @@ public class MappedFile extends ReferenceResource {
         return appendMessagesInner(messageExtBatch, cb, putMessageContext);
     }
 
+    // 艾斯：[消息发送存储流程] 消息发送存储 step6：将消息追加到MappedFile中。首先先获取MappleFile当前写指针，如果currentPos大于或等于文件大小
+    // 说明文件已写满，抛出UNKNOWN_ERROR。如果currentPos小于文件大小，通过mappedByteBuffer.slice()创建一个与MappleFile的共享内存区，并设置position为当前指针。
     public AppendMessageResult appendMessagesInner(final MessageExt messageExt, final AppendMessageCallback cb,
             PutMessageContext putMessageContext) {
         assert messageExt != null;
@@ -286,6 +363,10 @@ public class MappedFile extends ReferenceResource {
     }
 
     /**
+     * 将内存中的数据刷写到磁盘上，永久存储在磁盘中
+     * 刷写磁盘，直接调用mappedByteBuffer或fileChannel的force方法将内存中的数据持久化到磁盘，那么flushedPosition应该那等于mappedByteBuffer中的写指针；
+     * 如果writeBuffer不为空，则flushedPosition应等于上一次commit指针，因为上一次提交的数据就是进入到mappedByteBuffer中的数据；
+     * 如果writeBuffer为空，数据是直接进入到mappedByteBuffer，wrotePosition代表的是mappedByteBuffer中的指针，故设置flushPosition为wrotePosition
      * @return The current flushed position
      */
     public int flush(final int flushLeastPages) {
@@ -314,6 +395,13 @@ public class MappedFile extends ReferenceResource {
         return this.getFlushedPosition();
     }
 
+    /**
+     * MappedFile文件提交
+     * 执行提交操作，commitLeastPages为本次提交最小的页数，如果待提交数据不满commitLeastPages。则不执行本次提交操作，待下次提交。
+     * writeBuffer如果为空，直接返回wrotePosition指针，无需commit操作，表明commit的操作主体是writeBuffer。
+     * @param commitLeastPages
+     * @return
+     */
     public int commit(final int commitLeastPages) {
         if (writeBuffer == null) {
             //no need to commit data to file channel, so just regard wrotePosition as committedPosition.
@@ -337,6 +425,12 @@ public class MappedFile extends ReferenceResource {
         return this.committedPosition.get();
     }
 
+    /**
+     * 具体的提交实现
+     * 首先创建writeBuffer的共享缓存区，然后将新创建的position回退到上一次提交的位置lastCommittedPosition，设置limit为writePos（当前最大有效数据指针），
+     * 然后把committedPosition到wrotePosition的数据复制（写入）到fileChannel中，然后更新committedPosition指针为wrotePosition。
+     * commit的作用就是将MappedFile.writeBuffer中的数据提交到文件通道FileChannel中
+     */
     protected void commit0() {
         int writePos = this.wrotePosition.get();
         int lastCommittedPosition = this.committedPosition.get();
@@ -370,6 +464,12 @@ public class MappedFile extends ReferenceResource {
         return write > flush;
     }
 
+    /**
+     * 判断是否执行commit操作。如果文件已满返回true；如果commitLeastPages大于0，则比较wrotePosition（当前的写指针）和上一次提交的指针（committedPosition）
+     * 的差值，除以OS_PAGE_SIZE得到当前脏页的数量，如果大于commitLeastPages则返回true；如果commitLeastPages小于0表示只要存在脏页就提交
+     * @param commitLeastPages
+     * @return
+     */
     protected boolean isAbleToCommit(final int commitLeastPages) {
         int flush = this.committedPosition.get();
         int write = this.wrotePosition.get();
@@ -436,18 +536,20 @@ public class MappedFile extends ReferenceResource {
 
     @Override
     public boolean cleanup(final long currentRef) {
+        // 如果isAvailable为true，表明MappedFile当前可用，无需清理，返回false;
+
         if (this.isAvailable()) {
             log.error("this file[REF:" + currentRef + "] " + this.fileName
                 + " have not shutdown, stop unmapping.");
             return false;
         }
-
+       // 如果资源已经被清理，返回true；
         if (this.isCleanupOver()) {
             log.error("this file[REF:" + currentRef + "] " + this.fileName
                 + " have cleanup, do not do it again.");
             return true;
         }
-
+        // 如果是堆外内存，调用堆外内存的cleanup方法进行清除
         clean(this.mappedByteBuffer);
         TOTAL_MAPPED_VIRTUAL_MEMORY.addAndGet(this.fileSize * (-1));
         TOTAL_MAPPED_FILES.decrementAndGet();
@@ -455,11 +557,19 @@ public class MappedFile extends ReferenceResource {
         return true;
     }
 
+    /**
+     * mappedFile文件销毁
+     * @param intervalForcibly 拒绝被销毁的最大存活时间
+     * @return
+     */
     public boolean destroy(final long intervalForcibly) {
         this.shutdown(intervalForcibly);
 
+        // 艾斯：[MappedFile销毁] step2：判断是否清理完成，判断标准是引用次数小于等于0并且cleanupOver为true，cleanupOver为true的触发条件是
+        // release成功将MappedByteBuffer的资源释放
         if (this.isCleanupOver()) {
             try {
+                // 艾斯：[MappedFile销毁] step3：关闭文件通道，删除物理文件
                 this.fileChannel.close();
                 log.info("close file channel " + this.fileName + " OK");
 
@@ -492,6 +602,8 @@ public class MappedFile extends ReferenceResource {
 
     /**
      * @return The max position which have valid data
+     * 获取当前文件最大的可读指针，如果writeBuffer为空，则直接返回当前的写指针；如果writeBuffer不为空，则返回上一次提交的指针。
+     * 在MappedFile的设计中，只有提交了的数据（写入到MappedByteBuffer或FileChannel中的数据）才是安全的数据
      */
     public int getReadPosition() {
         return this.writeBuffer == null ? this.wrotePosition.get() : this.committedPosition.get();

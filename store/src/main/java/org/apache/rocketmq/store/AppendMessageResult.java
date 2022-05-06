@@ -20,23 +20,27 @@ import java.util.function.Supplier;
 
 /**
  * When write a message to the commit log, returns results
+ * 消息追加到cmmmitlog文件中返回类
  */
 public class AppendMessageResult {
-    // Return code
+    // Return code 消息追加结果
     private AppendMessageStatus status;
-    // Where to start writing
+    // Where to start writing 消息的物理偏移量
     private long wroteOffset;
     // Write Bytes
     private int wroteBytes;
-    // Message ID
+    // Message ID 消息ID
     private String msgId;
     private Supplier<String> msgIdSupplier;
-    // Message storage timestamp
+    // Message storage timestamp 消息存储时间戳
     private long storeTimestamp;
     // Consume queue's offset(step by one)
     private long logicsOffset;
     private long pagecacheRT = 0;
 
+    /**
+     * 批量发送消息时的消息条数
+     */
     private int msgNum = 1;
 
     public AppendMessageResult(AppendMessageStatus status) {

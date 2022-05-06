@@ -27,6 +27,7 @@ public interface AppendMessageCallback {
 
     /**
      * After message serialization, write MapedByteBuffer
+     * 这里只是将消息追加到内存中
      *
      * @return How many bytes to write
      */
