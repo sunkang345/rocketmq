@@ -54,6 +54,8 @@ public class IndexService {
             StorePathConfigHelper.getStorePathIndex(store.getMessageStoreConfig().getStorePathRootDir());
     }
 
+
+    // 艾斯：[存储文件加载流程] step6 加载索引文件，如果上次异常退出，而且索引文件上次刷盘时间小于该索引文件最大的消息时间戳该文件将立刻被销毁
     public boolean load(final boolean lastExitOK) {
         File dir = new File(this.storePath);
         File[] files = dir.listFiles();
@@ -198,7 +200,13 @@ public class IndexService {
         return topic + "#" + key;
     }
 
+    /**
+     * 根据消息更新index索引文件
+     * @param req
+     */
     public void buildIndex(DispatchRequest req) {
+        // 艾斯：[根据消息更新index索引文件] step1 获取或者创建indexFile文件，
+        // 并获取所有文件的最大的物理偏移量，如果该消息的物理偏移量小于索引文件中的物理偏移量，则说明是重复数据，忽略本次操作
         IndexFile indexFile = retryGetAndCreateIndexFile();
         if (indexFile != null) {
             long endPhyOffset = indexFile.getEndPhyOffset();
@@ -219,6 +227,7 @@ public class IndexService {
                     return;
             }
 
+            // 艾斯：[根据消息更新index索引文件] step2 如果消息的唯一键不为空，则添加到Hash索引中，以便根据唯一键检索消息
             if (req.getUniqKey() != null) {
                 indexFile = putKey(indexFile, msg, buildKey(topic, req.getUniqKey()));
                 if (indexFile == null) {
@@ -226,7 +235,7 @@ public class IndexService {
                     return;
                 }
             }
-
+            // 艾斯：[根据消息更新index索引文件] step3 构建索引键，RocketMQ支持为同一个消息创建多个索引，多个索引键空格分开。
             if (keys != null && keys.length() > 0) {
                 String[] keyset = keys.split(MessageConst.KEY_SEPARATOR);
                 for (int i = 0; i < keyset.length; i++) {

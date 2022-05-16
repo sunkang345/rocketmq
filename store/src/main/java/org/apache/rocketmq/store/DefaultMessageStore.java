@@ -231,21 +231,28 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     /**
+     * rocketmq 存储文件加载流程
      * @throws IOException
      */
     public boolean load() {
         boolean result = true;
 
         try {
+            // 艾斯：[存储文件加载流程] step1 判断上一次退出是否正常。实现机制是Broker在启动时创建${ROCKET_HOME}/store/abort文件，在推出时通过注册-JVM钩子函数删除abort文件
+            // 。如果下一次启动时存在abort文件，说明Broker是异常退出的，commitlog和ConsumeQueue数据有可能不一致，需要进行修复。
             boolean lastExitOK = !this.isTempFileExist();
             log.info("last shutdown {}", lastExitOK ? "normally" : "abnormally");
 
+            // 艾斯：[存储文件加载流程] step3 加载commitlog文件，加载${ROCKET_HOME}/store/commit 目录下所有的文件并按照文件名排序。
+            // 如果文件大小与配置文件的单个文件大小不一致，将忽略该目录下所有文件，然后创建mappedFile对象。
             // load Commit Log
             result = result && this.commitLog.load();
 
+            // 艾斯：[存储文件加载流程] step4 加载消息消费队列
             // load Consume Queue
             result = result && this.loadConsumeQueue();
 
+            // 艾斯：[存储文件加载流程] step5 加载存储监测点，监测点主要记录commitlog文件、consumeQueue文件、index索引文件的刷盘点，将在下文的文件刷盘机制中再次提交。
             if (result) {
                 this.storeCheckpoint =
                     new StoreCheckpoint(StorePathConfigHelper.getStoreCheckpoint(this.messageStoreConfig.getStorePathRootDir()));
@@ -256,6 +263,7 @@ public class DefaultMessageStore implements MessageStore {
 
                 log.info("load over, and the max phy offset = {}", this.getMaxPhyOffset());
 
+                // 艾斯：[存储文件加载流程] step2 加载延迟队列，rocketmq定时消息相关
                 if (null != scheduleMessageService) {
                     result =  this.scheduleMessageService.load();
                 }
@@ -623,30 +631,45 @@ public class DefaultMessageStore implements MessageStore {
         long beginTime = this.getSystemClock().now();
 
         GetMessageStatus status = GetMessageStatus.NO_MESSAGE_IN_QUEUE;
+        // 待查找的队列的偏移量
         long nextBeginOffset = offset;
+        // 当前消息队列最小偏移量
         long minOffset = 0;
+        // 当前消息队列最大偏移量
         long maxOffset = 0;
 
+        // 艾斯：[消息服务端Broker组装消息] step3 根据主题名称和队列编号获取消息消费队列
         // lazy init when find msg.
         GetMessageResult getResult = null;
 
+        // 当前commitlog文件最大偏移量
         final long maxOffsetPy = this.commitLog.getMaxOffset();
 
         ConsumeQueue consumeQueue = findConsumeQueue(topic, queueId);
         if (consumeQueue != null) {
+
+            // 艾斯：[消息服务端Broker组装消息] step4 import 消息偏移量异常情况校对下一次拉取偏移量
             minOffset = consumeQueue.getMinOffsetInQueue();
             maxOffset = consumeQueue.getMaxOffsetInQueue();
 
+            // maxOffset == 0，表示当前消费队列中没有消息，拉取结果：NO_MESSAGE_IN_QUEUE
+            // 如果当前Broker为主节点或者offsetCheckInSlave为false，下次的拉取偏移量依然为offset；
+            // 如果当前Broker为从节点，offsetCheckInSlave为true，设置下次拉取偏移量为0
             if (maxOffset == 0) {
                 status = GetMessageStatus.NO_MESSAGE_IN_QUEUE;
                 nextBeginOffset = nextOffsetCorrection(offset, 0);
+                // 2 ) offset < minOffset，表示待拉取消息偏移量小于队列的起始偏移量，拉取结果为： OFFSET TOO SMALL。
+                // 如果当前 Broker 为主节点或 offsetChecklnS!ave 为 false，下次拉取偏移量依然为 offset。
+                // 如果当前 Broker 为从节点并且 offsetChecklnS!ave 为 true，下次拉取偏移量设置为 minOffseto
             } else if (offset < minOffset) {
                 status = GetMessageStatus.OFFSET_TOO_SMALL;
                 nextBeginOffset = nextOffsetCorrection(offset, minOffset);
             } else if (offset == maxOffset) {
+                // 3 ) offset == maxOffset，如果待拉取偏移量等于队列 最大偏移量，拉取结果 ： OFFSET OVE盯LOW ONE。 下次拉取偏移量依然为 offset
                 status = GetMessageStatus.OFFSET_OVERFLOW_ONE;
                 nextBeginOffset = nextOffsetCorrection(offset, offset);
             } else if (offset > maxOffset) {
+                // 4 ) Offset > maxOffset， 表示偏移量越界 ， 拉取结果： OFFSET_OVERFLOW BADLY
                 status = GetMessageStatus.OFFSET_OVERFLOW_BADLY;
                 if (0 == minOffset) {
                     nextBeginOffset = nextOffsetCorrection(offset, minOffset);
@@ -654,6 +677,9 @@ public class DefaultMessageStore implements MessageStore {
                     nextBeginOffset = nextOffsetCorrection(offset, maxOffset);
                 }
             } else {
+                // 艾斯：[消息服务端Broker组装消息] step5
+                // 如果待拉取偏移量大于 minOffset 并且小于 maxOffs时，从当前 offset 处尝试拉 取 32 条消息，根据消息队列偏移量（ ConsumeQueue）从 commitlog 文件中查找消息在第 4
+                // 章中已经详细介绍了，在这里就不重复介绍了。
                 SelectMappedBufferResult bufferConsumeQueue = consumeQueue.getIndexBuffer(offset);
                 if (bufferConsumeQueue != null) {
                     try {
@@ -1492,7 +1518,7 @@ public class DefaultMessageStore implements MessageStore {
 
     private void recover(final boolean lastExitOK) {
         long maxPhyOffsetOfConsumeQueue = this.recoverConsumeQueue();
-
+        // 艾斯：[存储文件加载流程] step7 根据Broker是否是正常停止执行不同的恢复策略
         if (lastExitOK) {
             this.commitLog.recoverNormally(maxPhyOffsetOfConsumeQueue);
         } else {
@@ -1539,6 +1565,8 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     public void recoverTopicQueueTable() {
+        // 艾斯：[存储文件加载流程] step8 回复sonsumeQueue文件后，将在commitlog实例中保存每个消息消费队列当前的存储逻辑偏移量，
+        // 这也是消息中不存存储了消息主题、消息队列id、还存储了消息队列偏移量的关系所在
         HashMap<String/* topic-queueid */, Long/* offset */> table = new HashMap<String, Long>(1024);
         long minPhyOffset = this.commitLog.getMinOffset();
         for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
@@ -1590,8 +1618,15 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
+    /**
+     * 根据消息更新ConsumeQueue
+     * @param dispatchRequest
+     */
     public void putMessagePositionInfo(DispatchRequest dispatchRequest) {
+        // 艾斯：[根据消息更新ConsumeQueue] step1 根据消息的主题和队列id，获取ConsumeQueue文件
         ConsumeQueue cq = this.findConsumeQueue(dispatchRequest.getTopic(), dispatchRequest.getQueueId());
+        // 艾斯：[根据消息更新ConsumeQueue] step2 依次将消息偏移量、消息长度、tag hashcode写入到ByteBuffer中，
+        // 并根据consumeQueueOffset计算ConsumeQueue中的物理地址，将内容追加到ConsumeQueue的内存映射文件中（本操作只追加不刷盘，consumeQueue的刷盘放肆为异步刷盘模式）
         cq.putMessagePositionInfoWrapper(dispatchRequest, checkMultiDispatchQueue(dispatchRequest));
     }
 

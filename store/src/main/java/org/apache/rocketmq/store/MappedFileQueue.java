@@ -130,6 +130,11 @@ public class MappedFileQueue {
     public void truncateDirtyFiles(long offset) {
         List<MappedFile> willRemoveFiles = new ArrayList<MappedFile>();
 
+        // 艾斯：[Broker异常停止文件恢复] step6
+        // 艾斯：[Broker正常停止文件恢复] step5 删除offset之后的所有文件。遍历目录下的文件，如果文件的尾部偏移量小于offset则跳过该文件，如果尾部的偏移量大于offset，则进一步比较
+        // offset与文件的开始偏移量，如果offset大于文件的起始偏移量，说明当前文件包含了有效偏移量，设置MappedFile的wrotePosition和committedPosition；
+        // 如果offset小于文件的起始偏移量，说明该文件是有效文件后面创建的，调用org.apache.rocketmq.store.MappedFile.destroy方法释放MappedFile占用的内存资源，
+        // 然后将其加入到待删除的文件列表中，最终调用deleteExpiredFile将文件从磁盘中删除
         for (MappedFile file : this.mappedFiles) {
             long fileTailOffset = file.getFileFromOffset() + this.mappedFileSize;
             if (fileTailOffset > offset) {
@@ -183,7 +188,9 @@ public class MappedFileQueue {
     public boolean doLoad(List<File> files) {
         // ascending order
         files.sort(Comparator.comparing(File::getName));
-
+        // 艾斯：[存储文件加载流程] step3 加载commitlog文件，加载${ROCKET_HOME}/store/commit 目录下所有的文件并按照文件名排序。
+        // 如果文件大小与配置文件的单个文件大小不一致，将忽略该目录下所有文件，
+        // 然后创建mappedFile对象。注意load方法将wrotePosition、flushedPosition、committedPosition三个指针都设置为文件大小
         for (File file : files) {
             if (file.length() != this.mappedFileSize) {
                 log.warn(file + "\t" + file.length()

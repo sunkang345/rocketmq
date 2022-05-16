@@ -131,6 +131,13 @@ public abstract class RebalanceImpl {
         return result;
     }
 
+    /**
+     * 如果经过消息队列重新负载（分配）后，分配到新的消息队列时，首先需要尝试向 Broker 发起锁定该消息队列的请求，如果返回加锁成功则创建该消息队列的拉取任务，
+     * 否 则将跳过，等待其他消费者释放该消息队列的锁，然后在下一次队列重新负载时再尝试加
+     * 锁
+     * @param mq
+     * @return
+     */
     public boolean lock(final MessageQueue mq) {
         FindBrokerResult findBrokerResult = this.mQClientFactory.findBrokerAddressInSubscribe(mq.getBrokerName(), MixAll.MASTER_ID, true);
         if (findBrokerResult != null) {
@@ -165,6 +172,10 @@ public abstract class RebalanceImpl {
     }
 
     public void lockAll() {
+        /*
+         艾斯：[ConsumeMessageOrderlyService 启动方法] step1 将消息队列按照Broker组织成
+         HashMap<String(brokerName), Set<MessageQueue>>，方便下一步向Broker发送锁定消息队列请求。
+         */
         HashMap<String, Set<MessageQueue>> brokerMqs = this.buildProcessQueueTableByBrokerName();
 
         Iterator<Entry<String, Set<MessageQueue>>> it = brokerMqs.entrySet().iterator();
@@ -184,12 +195,18 @@ public abstract class RebalanceImpl {
                 requestBody.setMqSet(mqs);
 
                 try {
-                    // 艾斯：向Broker（Master主节点）发送锁定消息队列，该方法返回成功被当前消费者锁定的消息消费队列
+                    /*
+                     艾斯：[ConsumeMessageOrderlyService 启动方法] step2
+                     向Broker（Master主节点）发送锁定消息队列，该方法返回成功被当前消费者锁定的消息消费队列
+                     */
                     Set<MessageQueue> lockOKMQSet =
                         this.mQClientFactory.getMQClientAPIImpl().lockBatchMQ(findBrokerResult.getBrokerAddr(), requestBody, 1000);
 
                     for (MessageQueue mq : lockOKMQSet) {
-                        // 艾斯：将成功锁定的消息消费队列相应的处理队列设置为锁定状态，并且更新加锁时间
+                        /*
+                         * 艾斯：[ConsumeMessageOrderlyService 启动方法] step3
+                         * 艾斯：将成功锁定的消息消费队列相应的处理队列设置为锁定状态，并且更新加锁时间
+                         */
                         ProcessQueue processQueue = this.processQueueTable.get(mq);
                         if (processQueue != null) {
                             if (!processQueue.isLocked()) {
@@ -200,8 +217,11 @@ public abstract class RebalanceImpl {
                             processQueue.setLastLockTimestamp(System.currentTimeMillis());
                         }
                     }
-                    // 艾斯：遍历当前处理队列中的消息消费队列，如果当前消费者不持有该消息队列的锁，
-                    // 将处理队列的锁状态设置为false，暂停该消息消费队列的消息拉取与消息消费
+                    /*
+                     艾斯：[ConsumeMessageOrderlyService 启动方法] step4
+                     遍历当前处理队列中的消息消费队列，如果当前消费者不持有该消息队列的锁，
+                     将处理队列的锁状态设置为false，暂停该消息消费队列的消息拉取与消息消费
+                     */
                     for (MessageQueue mq : mqs) {
                         if (!lockOKMQSet.contains(mq)) {
                             ProcessQueue processQueue = this.processQueueTable.get(mq);
@@ -218,6 +238,13 @@ public abstract class RebalanceImpl {
         }
     }
 
+    /**
+     * 每 个 DefaultMQPushConsumerlmpl 都 持有一个单独的 R巳balancelmpl 对象，该方 法主要是遍历订阅信息对每个主题的队列进行重新负载。
+     * Rebalancelmpl 的 Map<String, SubscriptionData> subTable 在调用消费者 DefaultMQPushConsumerlmpl#subscrib巳 方法时填 充。
+     * 如果订阅信息发送变化，例如调用了 unsubscribe 方法，则需要将不关心的主题消费队 列从 processQueueTable 中移除。
+     * 接下来重点分析 Rebalancelmpl#rebalanceByTopic 来分析RocketMQ 是如何针对单个主题进行消息队列重新负载（以集群模式） 。
+     * @param isOrder
+     */
     public void doRebalance(final boolean isOrder) {
         Map<String, SubscriptionData> subTable = this.getSubscriptionInner();
         if (subTable != null) {
@@ -260,6 +287,11 @@ public abstract class RebalanceImpl {
                 break;
             }
             case CLUSTERING: {
+                // 艾斯：[消费者rebalance] step1 ：从主题订阅信息缓存表中获取主题的队列信息；
+                // 发送请求从 Broker 中该消费 组内当前所有的消费者客户端 ID ， 主题 topic 的队列可能分布在多个 Broker 上 ， 那请求 发往哪个 Broker 呢？
+                // RocketeMQ 从主题的路由信息表中随机选择一个 Broker。 Broker 为 什么会存在消费组内所有消费者的信息呢？
+                // 我们不妨回忆一下消费者在启动的时候会向 MQC!ientlnstance 中注册消费者，然后 MQC!ientlnstance 会向所有的 Broker 发送心跳包， 心跳包中包含 MQC!ientlnstance 的消费者信息。
+                // 如果 mqSet 、 cidAll 任意一个为空则忽略本次消息队列负载。
                 Set<MessageQueue> mqSet = this.topicSubscribeInfoTable.get(topic);
                 List<String> cidAll = this.mQClientFactory.findConsumerIdList(topic, consumerGroup);
                 if (null == mqSet) {
@@ -272,6 +304,7 @@ public abstract class RebalanceImpl {
                     log.warn("doRebalance, {} {}, get consumer id list failed", consumerGroup, topic);
                 }
 
+                // 艾斯：[消费者rebalance] step2 首先对 cidAll,mqAll 排序，这个很重要，同一个消费组内看到的视图保持一致， 确保同一个消费队列不会被多个消费者分配。
                 if (mqSet != null && cidAll != null) {
                     List<MessageQueue> mqAll = new ArrayList<MessageQueue>();
                     mqAll.addAll(mqSet);
@@ -279,6 +312,29 @@ public abstract class RebalanceImpl {
                     Collections.sort(mqAll);
                     Collections.sort(cidAll);
 
+                    // RocketMQ消息队列分配算法接口
+                    /*
+                     * RocketMQ 默认提供 5 种分配算法。
+                     * 1 ) AllocateMessageQueueAveragely：平均分配，推荐指数为 5 颗星。
+                     * 举例来说，如果现在有 8 个消息消费队列 q1，q2,q3,q4,q5,q6,q7,q8，有 3 个消费者cl,c2 ,c3，
+                     * 那么根据该负载算法，消息队列分配如下：
+                     * c1:q1,q2,q3
+                     * c2:q4,q5,q6
+                     * c3:q7,q8
+                     * 2 ) AllocateMessageQueueAveragelyByCircle：平均轮询分配，推荐指数为 5 颗星。
+                     * 举例来说，如果现在有 8 个消息消费队列，q1，q2,q3,q4,q5,q6,q7,q8 有 3 个消费者 cl ,c2,c3，
+                     * 那么根据该负载算法，消息队列分配如下：
+                     * cl : ql,q4,q7
+                     * c2 : q2,q5,q8
+                     * c3:  q3,q6
+                     * 3 ) AllocateMessageQueueConsistentHash ： 一致性 hash 。 不推荐使用，因为消息队列负载信息不容易跟踪。
+                     * 4 ) AllocateMessageQueueByConfig：根据配置，为每一个消费者配置固定的消息队列。
+                     * 5 ) AllocateMessageQueueByMachineRoom：根据 Broker 部署机房名，对每个消费者负责不同的 Broker 上的队列。
+                     *
+                     * 消息负载算法如果没有特殊的要求，尽量使用 AllocateMessageQueueAveragely 、 AllocateMessageQueueAveragelyByCircle，
+                     * 因为分配算法比较直观。 消息队列分配遵循 一个消费者可以分配多个消息队列，但同一个消息队列只会分配给一个消费者，
+                     * 故如果消费者个数大于消息队列数量，则有些消费者无法消费消息
+                     */
                     AllocateMessageQueueStrategy strategy = this.allocateMessageQueueStrategy;
 
                     List<MessageQueue> allocateResult = null;
@@ -334,6 +390,17 @@ public abstract class RebalanceImpl {
         final boolean isOrder) {
         boolean changed = false;
 
+        /*
+         艾斯：[消费者rebalance] step3
+         对比消息队列是否发生变化，主要思路是遍历当前负载队列集合，如果队列不在新分配队列集合中，需要将该队列停止消费并保存消费进度；
+         遍历已分配的队列，如果队列不 在队列负载表中（ processQueueTable ） 则需要创建该队列拉取任务 PullRequest ， 然后添加
+         到 PullMessageService 线程的 pullRequestQueue 中， Pul IMessageService 才会继续拉取任务。
+         ConcurrentMap<MessageQueue, ProcessQueue> processQueueTable，当前消费者负载的消息队列缓存表，
+         如果缓存表中的MessageQueue不包含在mqSet中，说明经过本次消息队列负载后，该mq被分配给其他消费者，故需要暂停该消息队列消息的消费，
+         方法 是将 ProccessQueue 的状态设置为 draped＝true，该 ProcessQueue 中的消息将不会再被消费，
+         调用removeUnnecessaryMessageQueue方法判断是否将MessageQueue、ProccessQueue缓存表中移除。
+         removeUnnecessaryMessageQueue在 Rebalancelmple 定义为抽象方法。 removeUnnecessaryMessageQueue在 方法主要持久化待移除 MessageQueue 消息消费进度。
+         */
         Iterator<Entry<MessageQueue, ProcessQueue>> it = this.processQueueTable.entrySet().iterator();
         while (it.hasNext()) {
             Entry<MessageQueue, ProcessQueue> next = it.next();
@@ -368,9 +435,22 @@ public abstract class RebalanceImpl {
             }
         }
 
+        /*
+         艾斯：[消费者rebalance] step4
+         遍历本次负载分配到的队列集合，如果 processQueueTable 中没有包含该消息 队列，表明这是本次新增加的消息队列，
+         首先从内存中移除该消息队列的消费进度，然后 从磁盘中读取该消息队列的消费进度，创建 PullRequest 对象。
+         这里有一个关键，如果读取 到的消费进度小于 0，则需要校对消费进度。 RocketMQ 提供 CONSUME_FROM_LAST_ OFFSET 、 CONSUME_FROM_FIRST OFFSET 、 CONSUME_FROM_TIMESTAMP 方式，
+         在创建消费者时可以通过调用 DefaultMQPushConsumer#setConsumeFromWhere 方法设置。
+         PullRequest 的 nextOffset 计算逻辑位于 ： RebalancePushlmpl#computePullFromWhere。
+         */
         List<PullRequest> pullRequestList = new ArrayList<PullRequest>();
         for (MessageQueue mq : mqSet) {
             if (!this.processQueueTable.containsKey(mq)) {
+                /*
+                 如果经过消息队列重新负载（分配）后，分配到新的消息队列时，首先需要尝试向 Broker 发起锁定该消息队列的请求，如果返回加锁成功则创建该消息队列的拉取任务，
+                 否 则将跳过，等待其他消费者释放该消息队列的锁，然后在下一次队列重新负载时再尝试加锁
+                 顺序消息消费和病发消息消费的第一个关键区别：顺序消息在创建消息队列拉取任务时需要在Broker服务器锁定该消息队列
+                 */
                 if (isOrder && !this.lock(mq)) {
                     log.warn("doRebalance, {}, add a new mq failed, {}, because lock failed", consumerGroup, mq);
                     continue;
@@ -381,6 +461,11 @@ public abstract class RebalanceImpl {
 
                 long nextOffset = -1L;
                 try {
+                    /*
+                     ConsumeFrom Where 相关消费进度校正策略只有在从磁盘 中 获取消费进度返回-1时才会生效 ，
+                     如果从消息进度存储文件 中 返 回 的消费进度小于-1， 表示偏移量非法，则使用偏移量-1去拉取消息，那么会发生什么呢？
+                     首先第一次去消息服务器 拉取消息时无法取到消息，但是会用-1去更新消费进度 ， 然后将消息消费队列丢弃， 在下一次消息队列负载时会再次消费
+                     */
                     nextOffset = this.computePullFromWhereWithException(mq);
                 } catch (Exception e) {
                     log.info("doRebalance, {}, compute offset failed, {}", consumerGroup, mq);
@@ -407,6 +492,9 @@ public abstract class RebalanceImpl {
             }
         }
 
+        /*
+         艾斯：[消费者rebalance] step5 将 PullRequest 加入到 PullMessageService 中 ， 以便唤醒 PullMessageService 线程
+         */
         this.dispatchPullRequest(pullRequestList);
 
         return changed;

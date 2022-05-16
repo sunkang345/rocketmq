@@ -1292,6 +1292,11 @@ public class DefaultMQProducerImpl implements MQProducerInner {
 
         Validators.checkMessage(msg, this.defaultMQProducer);
 
+        /*
+         艾斯：[事务消息发送流程] step1
+         ：首先为消息添加属性， TRAN_MSG和PGROUP，分别表示消息为prepare消息、消息所属消息生产者组。
+         设置消息生产者组的目的是在查询事务消息本地事务状态时，从 该生产者组中随机选择一个消息生产者即可，然后通过同步调用方式向 RocketMQ 发送消息
+         */
         SendResult sendResult = null;
         MessageAccessor.putProperty(msg, MessageConst.PROPERTY_TRANSACTION_PREPARED, "true");
         MessageAccessor.putProperty(msg, MessageConst.PROPERTY_PRODUCER_GROUP, this.defaultMQProducer.getProducerGroup());
@@ -1304,6 +1309,14 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         LocalTransactionState localTransactionState = LocalTransactionState.UNKNOW;
         Throwable localException = null;
         switch (sendResult.getSendStatus()) {
+            /*
+             艾斯：[事务消息发送流程] step2
+             根据消息发送结果执行相应的操作。
+             1 ） 如果消息发送成功 ， 则执行 TransactionListener #executeLocalTransaction 方法，该方法的职责是记录事务消息的本地事务状态，
+             例如可以通过将消息唯一 ID 存储在数据中 ， 并且该方法与业务代码处于同一个事务，与业务事务要么一起成功，要么一起失败。
+             这里 是事务消息设计的关键理念之一， 为后续的事务状态回查提供唯一依据。
+             2 ）如果消息发送失败，则设置本次事务状态为 LocalTransactionState.ROLLBACKMESSAGE
+             */
             case SEND_OK: {
                 try {
                     if (sendResult.getTransactionId() != null) {
@@ -1344,6 +1357,9 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         }
 
         try {
+            /*
+             艾斯：[事务消息发送流程] step3 根据第二步事务处理结果执行相关操作
+             */
             this.endTransaction(msg, sendResult, localTransactionState, localException);
         } catch (Exception e) {
             log.warn("local transaction execute " + localTransactionState + ", but end broker transaction failed", e);

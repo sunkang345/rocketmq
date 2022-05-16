@@ -90,6 +90,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
     private static final long PULL_TIME_DELAY_MILLS_WHEN_FLOW_CONTROL = 50;
     /**
      * Delay some time when suspend pull service
+     * 暂停拉取服务时延迟一些时间
      */
     private static final long PULL_TIME_DELAY_MILLS_WHEN_SUSPEND = 1000;
     private static final long BROKER_SUSPEND_MAX_TIME_MILLIS = 1000 * 15;
@@ -210,7 +211,13 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
         this.offsetStore = offsetStore;
     }
 
+    /**
+     * 消息拉取
+     * @param pullRequest
+     */
     public void pullMessage(final PullRequest pullRequest) {
+        // 艾斯：[客户端封装消息拉取请求] step1 从 PullRequest 中获取 ProcessQueue，如果处理队列当前状态未被丢弃，则更新 ProcessQueue 的 lastPullTimestamp 为当前时间戳；
+        // 如果当前消费者被挂起，则将拉取任务延迟 ls 再次放入到 PullMessageService 的拉取任务队列中，结束本次消息拉取。
         final ProcessQueue processQueue = pullRequest.getProcessQueue();
         if (processQueue.isDropped()) {
             log.info("the pull request[{}] is dropped.", pullRequest.toString());
@@ -233,6 +240,13 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
             return;
         }
 
+        // 艾斯：[客户端封装消息拉取请求] step2 进行消息拉取流控。从消息消费数量与消息消费间隔两个维度进行控制
+        // 1 ）消息处理总数，如果 ProcessQueue 当前处理的消息条数超过了 pullThresholdForQueue=lOOO 将触发流控，
+        // 放弃本次拉取任务，并且该队列的下一次拉取任务将在 50 毫秒后 才加入到拉取任务队列中，
+        // 每触发 1000 次流控后输出提示语： the consumer message buffer is full, so do flow control, minOffset=｛队列最小偏移量 ｝， maxOffset=｛队列最大偏移量 ｝， size＝｛消 息总条数｝, pullRequest= ｛拉取任务｝, flowControlTimes= ｛流控触发次数｝。
+        // 2 ) ProcessQueue 中队列最大偏移量与最小偏离量的间距， 不能超过 consumeConcurrentlyMaxSpan，否则触发流控，
+        // 每触发 1000 次输出提示语： the queue's messages, span too long, so do flow control, minOffset=｛队列最小偏移量｝， maxOffs巳t=｛队列最大偏移量｝， maxSpan＝｛间隔｝， pullRequest= ｛拉取任务信息｝， flowControlTimes＝｛流控触发次数｝。
+        // 这里主要的考量是担心一条消息堵塞，消息进度无法向前推进，可能造成大量消息重复消费。
         long cachedMessageCount = processQueue.getMsgCount().get();
         long cachedMessageSizeInMiB = processQueue.getMsgSize().get() / (1024 * 1024);
 
@@ -268,6 +282,10 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                 return;
             }
         } else {
+            /*
+             顺序消息拉取时，需要向processQueue申请锁，如果消息处理队列未被锁定，则延迟 3s 后再将 PullRequest 对象放入到拉取任务中，
+             如果该处理队列是第一次拉取任务，则首先计算拉取偏移量，然后向消息服务端拉取消息
+             */
             if (processQueue.isLocked()) {
                 if (!pullRequest.isPreviouslyLocked()) {
                     long offset = -1L;
@@ -296,6 +314,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
             }
         }
 
+        // 艾斯：[客户端封装消息拉取请求] step3 拉取该主题订阅消息，如果订阅消息为空，结束本次消息拉取，关于该队列的下一次拉取任务延迟3s
         final SubscriptionData subscriptionData = this.rebalanceImpl.getSubscriptionInner().get(pullRequest.getMessageQueue().getTopic());
         if (null == subscriptionData) {
             this.executePullRequestLater(pullRequest, pullTimeDelayMillsWhenException);
@@ -403,6 +422,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
             }
         };
 
+        // 艾斯：[客户端封装消息拉取请求] step4 构建消息拉取系统标识
         boolean commitOffsetEnable = false;
         long commitOffsetValue = 0L;
         if (MessageModel.CLUSTERING == this.defaultMQPushConsumer.getMessageModel()) {
@@ -430,6 +450,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
             classFilter // class filter
         );
         try {
+            // 艾斯：[客户端封装消息拉取请求] step5 与服务端交互
             this.pullAPIWrapper.pullKernelImpl(
                 pullRequest.getMessageQueue(),
                 subExpression,
@@ -571,6 +592,10 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
         }
     }
 
+    /**
+     * 消费者启动流程
+     * @throws MQClientException
+     */
     public synchronized void start() throws MQClientException {
         switch (this.serviceState) {
             case CREATE_JUST:
@@ -579,13 +604,14 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                 this.serviceState = ServiceState.START_FAILED;
 
                 this.checkConfig();
-
+                // 艾斯：[消费者启动流程] step1 构建主题订阅信息SubscriptionData并加入到rebalanceImpl的订阅信息中。
                 this.copySubscription();
 
                 if (this.defaultMQPushConsumer.getMessageModel() == MessageModel.CLUSTERING) {
                     this.defaultMQPushConsumer.changeInstanceNameToPID();
                 }
 
+                // 艾斯：[消费者启动流程] step2 初始化 MQClientInstance rebalanceImpl
                 this.mQClientFactory = MQClientManager.getInstance().getOrCreateMQClientInstance(this.defaultMQPushConsumer, this.rpcHook);
 
                 this.rebalanceImpl.setConsumerGroup(this.defaultMQPushConsumer.getConsumerGroup());
@@ -598,6 +624,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                     this.defaultMQPushConsumer.getConsumerGroup(), isUnitMode());
                 this.pullAPIWrapper.registerFilterMessageHook(filterMessageHookList);
 
+                // 艾斯：[消费者启动流程] step3 初始化消息进度。如果消息消费时集群模式，那么消息进度保存在Broker上；如果消息消费时广播模式，那么消息进度存储在消费端。
                 if (this.defaultMQPushConsumer.getOffsetStore() != null) {
                     this.offsetStore = this.defaultMQPushConsumer.getOffsetStore();
                 } else {
@@ -615,6 +642,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                 }
                 this.offsetStore.load();
 
+                // 艾斯：[消费者启动流程] step4 根据是否是顺序消费，创建消费端消费线程服务。consumeMessageService主要负责消息消费，内部维护一个线程池。
                 if (this.getMessageListenerInner() instanceof MessageListenerOrderly) {
                     this.consumeOrderly = true;
                     this.consumeMessageService =
@@ -626,7 +654,8 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                 }
 
                 this.consumeMessageService.start();
-
+                // 艾斯：[消费者启动流程] step5 向MQClientInstance注册消费者，并启动MQClientInstance，
+                // 在一个JVM中的所有消费者、生产者持有同一个MQClientInstance，MQClientInstance只会启动一次
                 boolean registerOK = mQClientFactory.registerConsumer(this.defaultMQPushConsumer.getConsumerGroup(), this);
                 if (!registerOK) {
                     this.serviceState = ServiceState.CREATE_JUST;

@@ -89,6 +89,10 @@ public class DefaultMQPushConsumer extends ClientConfig implements MQPushConsume
      * separately.
      * </p>
      *
+     * 消息模型定义了消息如何传递给每个消费者客户端的方式。
+     *
+     * RocketMQ 支持两种消息模型：集群和广播。如果设置集群，同一个consumerGroup的consumer客户端只会消费订阅消息的分片，实现负载均衡；
+     * 反之，如果设置了广播，每个消费者客户端将分别消费所有订阅的消息。
      * This field defaults to clustering.
      */
     private MessageModel messageModel = MessageModel.CLUSTERING;
@@ -123,6 +127,15 @@ public class DefaultMQPushConsumer extends ClientConfig implements MQPushConsume
      * messages born prior to {@link #consumeTimestamp} will be ignored
      * </li>
      * </ul>
+     *
+     * 消费者启动的消费点。
+     *
+     * 消费点分为三点：
+     * CONSUME_FROM_LAST_OFFSET ：消费者客户端从之前停止的地方开始。如果是新启动的消费者客户端，根据消费者群体的老化情况，有两种情况：
+     * 如果consumer group是最近才创建的，最早订阅的消息还没有过期，说明consumer group代表的是最近上线的业务，从头开始消费；
+     * 如果最早订阅的消息已过期，则从最新消息开始消费，这意味着在启动时间戳之前生成的消息将被忽略。
+     * CONSUME_FROM_FIRST_OFFSET ：消费者客户端将从最早可用的消息开始。
+     * CONSUME_FROM_TIMESTAMP ：Consumer 客户端将从指定的时间戳开始，这意味着在consumeTimestamp之前生成的消息将被忽略
      */
     private ConsumeFromWhere consumeFromWhere = ConsumeFromWhere.CONSUME_FROM_LAST_OFFSET;
 
@@ -136,21 +149,26 @@ public class DefaultMQPushConsumer extends ClientConfig implements MQPushConsume
 
     /**
      * Queue allocation algorithm specifying how message queues are allocated to each consumer clients.
+     * 队列分配算法，指定如何将消息队列分配给每个消费者客户端。
+     * 集群模式下消息队列负载策略
      */
     private AllocateMessageQueueStrategy allocateMessageQueueStrategy;
 
     /**
      * Subscription relationship
+     * 订阅消息
      */
     private Map<String /* topic */, String /* sub expression */> subscription = new HashMap<String, String>();
 
     /**
      * Message listener
+     * 消息业务监听器
      */
     private MessageListener messageListener;
 
     /**
      * Offset Storage
+     * 消息消费进度存储器
      */
     private OffsetStore offsetStore;
 
@@ -161,22 +179,26 @@ public class DefaultMQPushConsumer extends ClientConfig implements MQPushConsume
 
     /**
      * Max consumer thread number
+     * 消费者最大线程数，由于消费者线程池使用的是无界队列，故消费者线程个数最多只有consumeThreadMin个
      */
     private int consumeThreadMax = 20;
 
     /**
      * Threshold for dynamic adjustment of the number of thread pool
+     * 动态调整线程池数量的阈值
      */
     private long adjustThreadPoolNumsThreshold = 100000;
 
     /**
      * Concurrently max span offset.it has no effect on sequential consumption
+     * 并发消息消费处理队列最大跨度，默认2000，表示如果消息队列中偏移量最大的消息与偏移量最小的消息跨度超过2000则延迟50ms后再去拉取消息
      */
     private int consumeConcurrentlyMaxSpan = 2000;
 
     /**
      * Flow control threshold on queue level, each message queue will cache at most 1000 messages by default,
      * Consider the {@code pullBatchSize}, the instantaneous value may exceed the limit
+     * 每1000次流后打印流控日志
      */
     private int pullThresholdForQueue = 1000;
 
@@ -213,21 +235,25 @@ public class DefaultMQPushConsumer extends ClientConfig implements MQPushConsume
 
     /**
      * Message pull Interval
+     * 推模式下拉取任务时间间隔，默认一次拉取任务完成继续拉取
      */
     private long pullInterval = 0;
 
     /**
      * Batch consumption size
+     * 消息并发消费时一次消费的消息条数，通俗点讲就是每次传入messageListener.counumeMessage方法中的消息条数
      */
     private int consumeMessageBatchMaxSize = 1;
 
     /**
      * Batch pull size
+     * 每次消息拉取的条数，默认32条
      */
     private int pullBatchSize = 32;
 
     /**
      * Whether update subscription relationship when every pull
+     * 是否每次拉取消息都更新订阅消息，默认false
      */
     private boolean postSubscriptionWhenPull = false;
 
@@ -242,16 +268,20 @@ public class DefaultMQPushConsumer extends ClientConfig implements MQPushConsume
      * In orderly mode, -1 means Integer.MAX_VALUE.
      *
      * If messages are re-consumed more than {@link #maxReconsumeTimes} before success.
+     * 最大消费重试次数
+     * 如果消息消费次数超过maxReconsumeTimes还未成功，则将该消息转移到一个失败队列，等待被删除
      */
     private int maxReconsumeTimes = -1;
 
     /**
      * Suspending pulling time for cases requiring slow pulling like flow-control scenario.
+     * 延迟将该队列的消息提交到消费者线程的等待时间，默认1s
      */
     private long suspendCurrentQueueTimeMillis = 1000;
 
     /**
      * Maximum amount of time in minutes a message may block the consuming thread.
+     * 消息消费超时时间 默认15分钟
      */
     private long consumeTimeout = 15;
 

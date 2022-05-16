@@ -29,12 +29,21 @@ import org.apache.rocketmq.remoting.common.RemotingUtil;
 import org.apache.rocketmq.remoting.netty.NettySystemConfig;
 import org.apache.rocketmq.store.SelectMappedBufferResult;
 
+/**
+ * HA Master服务端HA连接对象的封装，与Broker从服务器的网络读写实现类
+ */
 public class HAConnection {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private final HAService haService;
     private final SocketChannel socketChannel;
     private final String clientAddr;
+    /**
+     * HA Master网络写实现类
+     */
     private WriteSocketService writeSocketService;
+    /**
+     * HA Master网络读实现类
+     */
     private ReadSocketService readSocketService;
 
     private volatile long slaveRequestOffset = -1;

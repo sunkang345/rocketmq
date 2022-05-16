@@ -204,9 +204,12 @@ public class CommitLog {
     }
 
     /**
+     * Broker正常停止文件回复
      * When the normal exit, data recovery, all memory data have been flush
      */
     public void recoverNormally(long maxPhyOffsetOfConsumeQueue) {
+        // 艾斯：[Broker正常停止文件恢复] step1 Broker正常停再重启时，从倒数第三个文件开始进行恢复，如果不足3个文件，则从第一个文件开始恢复。
+        // checkCRCOnRecover参数设置在进行文件恢复时查找消息时是否验证CRC。
         boolean checkCRCOnRecover = this.defaultMessageStore.getMessageStoreConfig().isCheckCRCOnRecover();
         final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
         if (!mappedFiles.isEmpty()) {
@@ -215,11 +218,16 @@ public class CommitLog {
             if (index < 0)
                 index = 0;
 
+            // 艾斯：[Broker正常停止文件恢复] step2  mappedFileOffset为当前文件已校验通过的offset；
+            // processOffset为commitlog文件已确认的物理偏移量 = mappedFile.getFileFromOffset() + mappedFileOffset
             MappedFile mappedFile = mappedFiles.get(index);
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
             long processOffset = mappedFile.getFileFromOffset();
             long mappedFileOffset = 0;
             while (true) {
+                // 艾斯：[Broker正常停止文件恢复] step3 遍历commitlog文件，每次取出一条信息，如果查找结果为true'并且消息的长度大于0表示消息正确，mappedFileOffset指针向前移动本条消息的长度；
+                // 如果查找结果为true并且消息的长度等于0，表示已到该文件的末尾，如果还有下一个文件，则重置processOffset、mappedFileOffset重复步骤3，否则跳出循环；
+                // 如果查找结果为false，则表明该文件未填满所有消息，跳出循环，结束遍历文件。
                 DispatchRequest dispatchRequest = this.checkMessageAndReturnSize(byteBuffer, checkCRCOnRecover);
                 int size = dispatchRequest.getMsgSize();
                 // Normal data
@@ -250,6 +258,7 @@ public class CommitLog {
                 }
             }
 
+            // 艾斯：[Broker正常停止文件恢复] step4 更新mappedFileQueue的flushedWhere和committedWhere指针
             processOffset += mappedFileOffset;
             this.mappedFileQueue.setFlushedWhere(processOffset);
             this.mappedFileQueue.setCommittedWhere(processOffset);
@@ -470,6 +479,11 @@ public class CommitLog {
         this.confirmOffset = phyOffset;
     }
 
+    /**
+     * Broker异常停止文件回复的步骤与正常停止文件恢复的流程基本相同，主要差别有两个。首先，正常停止默认从倒数第三个文件开始进行恢复，而异常停止则需要从第一个文件往前走，找到第一个消息存储正常的文件；
+     * 其次，如果commitlog目录没有消息文件，如果在消息消费队列目录下存在文件，则需要销毁。
+     * @param maxPhyOffsetOfConsumeQueue
+     */
     @Deprecated
     public void recoverAbnormally(long maxPhyOffsetOfConsumeQueue) {
         // recover by the minimum time stamp
@@ -495,6 +509,9 @@ public class CommitLog {
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
             long processOffset = mappedFile.getFileFromOffset();
             long mappedFileOffset = 0;
+            // 艾斯：[Broker异常停止文件恢复] step4遍历commitlog文件，每次取出一条信息，如果查找结果为true'并且消息的长度大于0表示消息正确，mappedFileOffset指针向前移动本条消息的长度；
+            // 如果查找结果为true并且消息的长度等于0，表示已到该文件的末尾，如果还有下一个文件，则重置processOffset、mappedFileOffset重复步骤3，否则跳出循环；
+            // 如果查找结果为false，则表明该文件未填满所有消息，跳出循环，结束遍历文件。
             while (true) {
                 DispatchRequest dispatchRequest = this.checkMessageAndReturnSize(byteBuffer, checkCRCOnRecover);
                 int size = dispatchRequest.getMsgSize();
@@ -549,6 +566,7 @@ public class CommitLog {
         }
         // Commitlog case files are deleted
         else {
+            // 艾斯：[Broker异常停止文件恢复] step5 如果未找到有效的mappedFile文件，则设置commitlog目录的flushedWhere、committedWhere的指针为0，并销毁消息消费队列文件
             log.warn("The commitlog files are deleted, and delete the consume queue files");
             this.mappedFileQueue.setFlushedWhere(0);
             this.mappedFileQueue.setCommittedWhere(0);
@@ -558,12 +576,12 @@ public class CommitLog {
 
     private boolean isMappedFileMatchedRecover(final MappedFile mappedFile) {
         ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
-
+        // 艾斯：[Broker异常停止文件恢复] step1 首先判断文件的魔数，如果不是MESSAGE_MAGIC_CODE，返回false，说明该文件不符合commitlog消息文件的存储格式。
         int magicCode = byteBuffer.getInt(MessageDecoder.MESSAGE_MAGIC_CODE_POSTION);
         if (magicCode != MESSAGE_MAGIC_CODE) {
             return false;
         }
-
+        // 艾斯：[Broker异常停止文件恢复] step2 如果文件中第一条消息存储时间等于0，返回false，说明该文件中未存储任何消息。
         int sysFlag = byteBuffer.getInt(MessageDecoder.SYSFLAG_POSITION);
         int bornhostLength = (sysFlag & MessageSysFlag.BORNHOST_V6_FLAG) == 0 ? 8 : 20;
         int msgStoreTimePos = 4 + 4 + 4 + 4 + 4 + 8 + 8 + 4 + 8 + bornhostLength;
@@ -572,6 +590,9 @@ public class CommitLog {
             return false;
         }
 
+        // 艾斯：[Broker异常停止文件恢复] step3 对比文件第一条消息的时间戳与监测点，文件第一条消息的时间戳小于文件监测点说明该文件部分消息是可靠的，则从该文件开始恢复。
+        // 文件检测点中保存了commitlog文件、consumeQueue文件、indexFile文件的文件刷盘点，RocketMQ默认选择这消息文件与消息消费队列这两个文件的时间刷盘点中最小值与消息文件第一消息的时间戳进行对比
+        // 如果messageIndexEnable为true，表示该索引文件的刷盘时间点也参与计算。
         if (this.defaultMessageStore.getMessageStoreConfig().isMessageIndexEnable()
             && this.defaultMessageStore.getMessageStoreConfig().isMessageIndexSafe()) {
             if (storeTimestamp <= this.defaultMessageStore.getStoreCheckpoint().getMinTimestampIndex()) {
@@ -1178,6 +1199,9 @@ public class CommitLog {
     }
 
     public static class GroupCommitRequest {
+        /**
+         * 刷盘点偏移量
+         */
         private final long nextOffset;
         private CompletableFuture<PutMessageStatus> flushOKFuture = new CompletableFuture<>();
         private final long deadLine;

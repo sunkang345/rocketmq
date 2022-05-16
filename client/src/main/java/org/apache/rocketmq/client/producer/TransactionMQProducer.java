@@ -28,8 +28,14 @@ public class TransactionMQProducer extends DefaultMQProducer {
     private int checkThreadPoolMaxSize = 1;
     private int checkRequestHoldMax = 2000;
 
+    /**
+     * 事务状态回查异步线程池
+     */
     private ExecutorService executorService;
 
+    /**
+     * 事务监听器
+     */
     private TransactionListener transactionListener;
 
     public TransactionMQProducer() {
@@ -90,6 +96,7 @@ public class TransactionMQProducer extends DefaultMQProducer {
             throw new MQClientException("TransactionListener is null", null);
         }
 
+        // 发送事务消息
         msg.setTopic(NamespaceUtil.wrapNamespace(this.getNamespace(), msg.getTopic()));
         return this.defaultMQProducerImpl.sendMessageInTransaction(msg, null, arg);
     }

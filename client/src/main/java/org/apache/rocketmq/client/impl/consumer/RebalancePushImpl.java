@@ -159,6 +159,12 @@ public class RebalancePushImpl extends RebalanceImpl {
             case CONSUME_FROM_MIN_OFFSET:
             case CONSUME_FROM_MAX_OFFSET:
             case CONSUME_FROM_LAST_OFFSET: {
+                // 从队列最新偏移量开始消费
+                /*
+                 offsetStore.readOffset(mq, ReadOffsetType.READ_FROM_STORE)返回-1 表示该消 息队列刚创建。
+                 从磁盘中读取到消息队列的消费进度， 如果大于 0 则直接返回即可；如果 等于-1 , CONSUME FROM LA ST OFFSET 模式下获取该消息队列当前最大的偏移量。
+                 如果小于-1， 则表示该消息进度文件中存储了错误的偏移量， 返回-1。
+                 */
                 long lastOffset = offsetStore.readOffset(mq, ReadOffsetType.READ_FROM_STORE);
                 if (lastOffset >= 0) {
                     result = lastOffset;
@@ -180,6 +186,11 @@ public class RebalancePushImpl extends RebalanceImpl {
                 }
                 break;
             }
+            // 从头开始消费
+            /*
+             从磁盘中读取到消息队列的消费进度， 如果大于 0 则直接返回即可；如果等于-1, CONSUME FROM FIRST OFFSET 模式下直接返回 0，从头开始。
+             如果小于-1，则表示该消息进度文件中存储了错误的偏移量，返回-1
+             */
             case CONSUME_FROM_FIRST_OFFSET: {
                 long lastOffset = offsetStore.readOffset(mq, ReadOffsetType.READ_FROM_STORE);
                 if (lastOffset >= 0) {
@@ -191,6 +202,12 @@ public class RebalancePushImpl extends RebalanceImpl {
                 }
                 break;
             }
+            // 从消费者启动的时间戳对应的消费进度开始消费
+                /*
+                 从磁盘中读取到消息队列的消费进度， 如果大于 0 则直接返回即可；如果等于-1'
+                 CONSUME FROM TIMESTAMP 模式下会尝试去操作消息存储时间戳为消费者启动的时间 戳，如果能找到则返回找到的偏移量，否则返回 0。 如果小于-1，则表示该消息进度文件
+                 中存储了错误的偏移量，返回-1。
+                 */
             case CONSUME_FROM_TIMESTAMP: {
                 long lastOffset = offsetStore.readOffset(mq, ReadOffsetType.READ_FROM_STORE);
                 if (lastOffset >= 0) {
